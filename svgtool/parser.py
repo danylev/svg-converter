@@ -1,17 +1,17 @@
 import re
 
 import numpy as np
+from scipy import dot
 from matplotlib import pyplot as plt
 
 from xml.etree import ElementTree as ET
 
 from collections import deque
-from svg.path import Line, Arc, QuadraticBezier, CubicBezier, Path, parse_path
+
+from svg.path import Line, Arc, QuadraticBezier, CubicBezier, parse_path
 from svg.path.path import Move
 
 from math import pi, cos, sin
-from copy import deepcopy
-from scipy import dot
 
 MOVETO_MARKERS = ('m', 'M')
 CLOSEPATH_MARKERS = ('z', 'Z')
@@ -43,8 +43,6 @@ def to_absolute(current_point, *args):
 
 
 def centroid(matrix):
-    import ipdb
-    ipdb.set_trace()
     length = len(matrix)
     summed = matrix.sum(axis=0)
     return summed / length
@@ -121,7 +119,7 @@ class SimpleElement:
             storage = self.points
         storage.append(np.array([primitive.end.real, primitive.end.imag]))
 
-    def curve_parser(self, primitive, storage=None, splits=15):
+    def curve_parser(self, primitive, storage=None, splits=8):
         if storage is None:
             storage = self.points
         for t in (x * (1/splits) for x in range(1, splits)):
@@ -177,14 +175,16 @@ class SvgParser:
         path_container = [item.get(self.PATH_MARKER) for item in self.root.iter(self.ELEMENT_MARKER)]
         return path_container
 
-    def smart_filling(self, original_size, original_viewbox, requested_viewbox):
+    def smart_filling(self, original_size, requested_viewbox):
         new_size = np.array((abs(requested_viewbox[0] - requested_viewbox[2]),
                              abs(requested_viewbox[1] - requested_viewbox[3])))
-        import ipdb
-        ipdb.set_trace()
-        scale = 0
-        shift = new_size
-        return shift, scale
+        scale = np.amin(new_size/original_size)
+        return scale
+
+    def smart_shifting(self, original_viewbox, requested_viewbox):
+        shift = sum(original_viewbox) / 2 - np.array([(requested_viewbox[0] + requested_viewbox[2]) / 2,
+                                                      (requested_viewbox[1] + requested_viewbox[3]) / 2])
+        return shift
 
     def parse(self):
         for element in self.paths:
@@ -207,18 +207,20 @@ class SvgParser:
         self.points = np.concatenate([element.points for element in self.element_list])
         cent = centroid(self.points)
         tile = np.tile(cent, (len(self.points), 1))
-        min, max = np.amin(self.points, axis=0), np.amax(self.points, axis=0)
-        original_viewbox = (min, max)
-        original_size = np.absolute((max-min))
-        if self.viewbox:
-            shift_matrix, scale_matrix = self.smart_filling(original_size, original_viewbox, self.viewbox)
-            # dot(scale_matrix * (self.points - shift_matrix))
-        import ipdb
-        ipdb.set_trace()
         if self.rotate:
             # Reshape into vertical polygon, very demanding operation, especially for long text\figures
             rotation_matrix = np.array([[cos(self.rotate), -sin(self.rotate)], [sin(self.rotate), cos(self.rotate)]])
             self.points = dot((self.points-tile), rotation_matrix) + tile
+        min, max = np.amin(self.points, axis=0), np.amax(self.points, axis=0)
+        original_viewbox = (min, max)
+        original_size = np.absolute(max - min)
+        if self.viewbox:
+            scale_matrix = self.smart_filling(original_size, self.viewbox)
+            self.points = list(map(lambda x: np.multiply(x, np.array([scale_matrix, scale_matrix])), self.points))
+            min, max = np.amin(self.points, axis=0), np.amax(self.points, axis=0)
+            reshaped_viewbox = (min, max)
+            shift_matrix = self.smart_shifting(reshaped_viewbox, self.viewbox)
+            self.points = list(map(lambda x: np.subtract(x, shift_matrix), self.points))
         if self.plot:
             plt.scatter(*zip(*self.points))
             plt.show()
@@ -239,7 +241,6 @@ class SvgParser:
 
 
 if __name__ == '__main__':
-    some_svg = SvgParser('../example (1).svg', out='out2.txt', viewbox=(13.7, -3.0, 17.7, 3), plot=True)
+    some_svg = SvgParser('../assets/example (1).svg', out='out.example', viewbox=(13.7, -3.0, 17.7, 3))
     some_svg.parse()
-    import ipdb
-    ipdb.set_trace()
+ 
