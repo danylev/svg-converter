@@ -6,11 +6,12 @@ from matplotlib import pyplot as plt
 from xml.etree import ElementTree as ET
 
 from collections import deque
-from svg.path import Line, Arc, QuadraticBezier, CubicBezier, parse_path
+from svg.path import Line, Arc, QuadraticBezier, CubicBezier, Path, parse_path
 from svg.path.path import Move
 
 from math import pi, cos, sin
 from copy import deepcopy
+from scipy import dot
 
 MOVETO_MARKERS = ('m', 'M')
 CLOSEPATH_MARKERS = ('z', 'Z')
@@ -52,12 +53,14 @@ def centroid(matrix):
 class SimpleElement:
 
     def __init__(self, path):
+
         self.root_path = path
         self.num_of_paths = self.get_paths
         self.subpath_list = self.get_subpaths
         self.curve_list = self.get_curves
         self.path = parse_path(path)
         self.points = []
+        self.to_print = None
 
     def __str__(self):
         return self.root_path
@@ -137,21 +140,25 @@ class SvgParser:
     PATH_MARKER = 'd'
     BASE_CTM = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
 
-    def __init__(self, file, width=None, height=None, scale_x=None, scale_y=None, rotate=None, radians=False, svg=None):
+    def __init__(self, file, out=None, viewbox=None, width=None, height=None, plot=False,
+                 scale_x=None, scale_y=None, rotate=None, radians=False):
+        self.out = out
+        self.plot = plot
         self.tree = ET.parse(file)
         self.root = self.tree.getroot()
         self.coords = list(map(float, self.root.attrib.get('viewBox').split()))
         self.width = self.coords[2] - self.coords[0]
         self.height = self.coords[3] - self.coords[1]
+        self.viewbox = viewbox
         self.measurement = self.root.attrib.get('height')[-2:]
         self.element_list = []
-
+        self.points = []
         # Transform arguments
         if width and height:
             self.field = (width, height)
         self.scale_x = scale_x
         self.scale_y = scale_y
-        if not radians:
+        if not radians and rotate:
             self.rotate = (rotate * pi) / 180
         else:
             self.rotate = rotate
@@ -170,40 +177,69 @@ class SvgParser:
         path_container = [item.get(self.PATH_MARKER) for item in self.root.iter(self.ELEMENT_MARKER)]
         return path_container
 
+    def smart_filling(self, original_size, original_viewbox, requested_viewbox):
+        new_size = np.array((abs(requested_viewbox[0] - requested_viewbox[2]),
+                             abs(requested_viewbox[1] - requested_viewbox[3])))
+        import ipdb
+        ipdb.set_trace()
+        scale = 0
+        shift = new_size
+        return shift, scale
+
     def parse(self):
         for element in self.paths:
-            figure = SimpleElement(element)
-            self.element_list.append(figure)
+            if sum([element.count(marker) for marker in MOVETO_MARKERS]) > 1:
+                moveto_indexes = [i for i, point in enumerate(element) if point in MOVETO_MARKERS]
+                moveto_indexes.append(len(element))
+                start = 0
+                for moveto in moveto_indexes[1:]:
+                    figure = SimpleElement(element[start:moveto])
+                    self.element_list.append(figure)
+            else:
+                figure = SimpleElement(element)
+                self.element_list.append(figure)
         for element in self.element_list:
             element.parse_element()
             element.normalize()
             if self.scale_x or self.scale_y:
                 element.scale_xy(x_scale=(self.scale_x or 1), y_scale=(self.scale_y or 1))
+
+        self.points = np.concatenate([element.points for element in self.element_list])
+        cent = centroid(self.points)
+        tile = np.tile(cent, (len(self.points), 1))
+        min, max = np.amin(self.points, axis=0), np.amax(self.points, axis=0)
+        original_viewbox = (min, max)
+        original_size = np.absolute((max-min))
+        if self.viewbox:
+            shift_matrix, scale_matrix = self.smart_filling(original_size, original_viewbox, self.viewbox)
+            # dot(scale_matrix * (self.points - shift_matrix))
+        import ipdb
+        ipdb.set_trace()
         if self.rotate:
             # Reshape into vertical polygon, very demanding operation, especially for long text\figures
-            merged = np.concatenate([element.points for element in self.element_list])
-            polygon = np.array([np.reshape(x, (2, 1)) for x in merged])
-            cent = np.reshape(centroid(polygon), (2, 1))
-            lenght = len(merged)
-            import ipdb
-            ipdb.set_trace()
-            tile = np.tile(cent, (lenght//2, 1))
-            rotation_matrix = np.array([[cos(self.rotate), -sin(self.rotate)],
-                                        [sin(self.rotate), cos(self.rotate)]])
-            new_points = rotation_matrix * (polygon - tile) + tile
-            print('lul')
+            rotation_matrix = np.array([[cos(self.rotate), -sin(self.rotate)], [sin(self.rotate), cos(self.rotate)]])
+            self.points = dot((self.points-tile), rotation_matrix) + tile
+        if self.plot:
+            plt.scatter(*zip(*self.points))
+            plt.show()
+        if self.out:
+            with open(self.out, 'w') as fd:
+                start = 0
+                number_of_elements = 0
+                for element in self.element_list:
+                    number_of_elements += len(element.points)
+                    x_point, y_point = self.points[start]
+                    fd.write(f'{{"command":"move","prm":{{"path":"line","movement":0,"speed":5000.0,"x":{x_point},"y":{y_point}}}}}\n')
+                    fd.write(f'{{"command":"move","prm":{{"path":"line","movement":1,"speed":5000.0,"z":-1}}}}\n')
+                    for point in self.points[start:number_of_elements]:
+                        x_point, y_point = point
+                        fd.write(f'{{"command":"move","prm":{{"path":"line","movement":0,"speed":5000.0,"x":{x_point},"y":{y_point}}}}}\n')
+                    fd.write(f'{{"command":"move","prm":{{"path":"line","movement":1,"speed":5000.0,"z":1}}}}\n')
+                    start = number_of_elements
 
 
 if __name__ == '__main__':
-    some_svg = SvgParser('../example (1).svg', scale_x=5, rotate=90)
+    some_svg = SvgParser('../example (1).svg', out='out2.txt', viewbox=(13.7, -3.0, 17.7, 3), plot=True)
     some_svg.parse()
-    for figure in some_svg.element_list:
-        points = figure.points
-        verticals = [np.reshape(x, (2, 1)) for x in points]
-        polygon = np.concatenate(list(verticals))
-        plt.scatter(*(zip(*points)))
     import ipdb
     ipdb.set_trace()
-    # plt.axis([65, 95, 89, 100])
-    plt.show()
-    print('Finish')
