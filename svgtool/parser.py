@@ -1,6 +1,7 @@
 import re
 
 import numpy as np
+from scipy import dot
 from matplotlib import pyplot as plt
 
 from xml.etree import ElementTree as ET
@@ -10,7 +11,7 @@ from svg.path import Line, Arc, QuadraticBezier, CubicBezier, parse_path
 from svg.path.path import Move
 
 from math import pi, cos, sin
-from scipy import dot
+
 
 MOVETO_MARKERS = ('m', 'M')
 CLOSEPATH_MARKERS = ('z', 'Z')

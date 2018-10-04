@@ -6,3 +6,4 @@ svgtool/out\.txt
 *.txt
 
 assets/
+!requirements.txt
