@@ -7,11 +7,11 @@ from matplotlib import pyplot as plt
 from xml.etree import ElementTree as ET
 
 from collections import deque
+
 from svg.path import Line, Arc, QuadraticBezier, CubicBezier, parse_path
 from svg.path.path import Move
 
 from math import pi, cos, sin
-
 
 MOVETO_MARKERS = ('m', 'M')
 CLOSEPATH_MARKERS = ('z', 'Z')
@@ -243,5 +243,4 @@ class SvgParser:
 if __name__ == '__main__':
     some_svg = SvgParser('../assets/example (1).svg', out='out.example', viewbox=(13.7, -3.0, 17.7, 3))
     some_svg.parse()
-    import ipdb
-    ipdb.set_trace()
+ 
