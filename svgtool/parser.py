@@ -3,9 +3,9 @@ import re
 import numpy as np
 from scipy import dot
 from matplotlib import pyplot as plt
+import click
 
 from xml.etree import ElementTree as ET
-
 from collections import deque
 
 from svg.path import Line, Arc, QuadraticBezier, CubicBezier, parse_path
@@ -50,7 +50,7 @@ def centroid(matrix):
 
 class SimpleElement:
 
-    def __init__(self, path):
+    def __init__(self, path, translate=None, smooth=8):
 
         self.root_path = path
         self.num_of_paths = self.get_paths
@@ -59,6 +59,11 @@ class SimpleElement:
         self.path = parse_path(path)
         self.points = []
         self.to_print = None
+        self.smooth = smooth
+        self.x_drift, self.y_drift = 0, 0
+        if translate:
+            data = re.findall(r'translate\(.*\)|$', translate)[0]
+            self.x_drift, self.y_drift = [float(item) for item in data.strip('translate()').split()]
 
     def __str__(self):
         return self.root_path
@@ -112,19 +117,21 @@ class SimpleElement:
     def move_parser(self, primitive, storage=None):
         if storage is None:
             storage = self.points
-        storage.append(np.array([primitive.start.real, primitive.start.imag]))
+        storage.append(np.array([primitive.start.real+self.x_drift, primitive.start.imag+self.y_drift]))
 
     def line_parser(self, primitive, storage=None):
         if storage is None:
             storage = self.points
-        storage.append(np.array([primitive.end.real, primitive.end.imag]))
+        storage.append(np.array([primitive.end.real+self.x_drift, primitive.end.imag+self.y_drift]))
 
     def curve_parser(self, primitive, storage=None, splits=8):
+        if self.smooth:
+            splits = self.smooth
         if storage is None:
             storage = self.points
         for t in (x * (1/splits) for x in range(1, splits)):
             point = primitive.point(t)
-            storage.append(np.array([point.real, point.imag]))
+            storage.append(np.array([point.real+self.x_drift, point.imag+self.y_drift]))
 
     def normalize(self):
         self.points = list(map(lambda x: np.multiply(x, np.array([1, -1])), self.points))
@@ -139,7 +146,7 @@ class SvgParser:
     BASE_CTM = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
 
     def __init__(self, file, out=None, viewbox=None, width=None, height=None, plot=False,
-                 scale_x=None, scale_y=None, rotate=None, radians=False):
+                 scale_x=None, scale_y=None, rotate=None, radians=False, smooth=8):
         self.out = out
         self.plot = plot
         self.tree = ET.parse(file)
@@ -148,18 +155,20 @@ class SvgParser:
         self.width = self.coords[2] - self.coords[0]
         self.height = self.coords[3] - self.coords[1]
         self.viewbox = viewbox
-        self.measurement = self.root.attrib.get('height')[-2:]
+        self.measurement = self.root.attrib.get('height')[-2:] if self.root.attrib.get('height') is not None else None
         self.element_list = []
         self.points = []
         # Transform arguments
         if width and height:
-            self.field = (width, height)
+            self.width = width
+            self.height = height
         self.scale_x = scale_x
         self.scale_y = scale_y
         if not radians and rotate:
             self.rotate = (rotate * pi) / 180
         else:
             self.rotate = rotate
+        self.smooth = smooth
 
     def __str__(self):
         return self.tree
@@ -172,7 +181,7 @@ class SvgParser:
 
     @property
     def paths(self):
-        path_container = [item.get(self.PATH_MARKER) for item in self.root.iter(self.ELEMENT_MARKER)]
+        path_container = [(item.get(self.PATH_MARKER), item.get('transform')) for item in self.root.iter(self.ELEMENT_MARKER)]
         return path_container
 
     def smart_filling(self, original_size, requested_viewbox):
@@ -188,15 +197,15 @@ class SvgParser:
 
     def parse(self):
         for element in self.paths:
-            if sum([element.count(marker) for marker in MOVETO_MARKERS]) > 1:
-                moveto_indexes = [i for i, point in enumerate(element) if point in MOVETO_MARKERS]
-                moveto_indexes.append(len(element))
+            if sum([element[0].count(marker) for marker in MOVETO_MARKERS]) > 1:
+                moveto_indexes = [i for i, point in enumerate(element[0]) if point in MOVETO_MARKERS]
+                moveto_indexes.append(len(element[0]))
                 start = 0
                 for moveto in moveto_indexes[1:]:
-                    figure = SimpleElement(element[start:moveto])
+                    figure = SimpleElement(element[0][start:moveto], translate=element[1], smooth=self.smooth)
                     self.element_list.append(figure)
             else:
-                figure = SimpleElement(element)
+                figure = SimpleElement(element[0], smooth=self.smooth, translate=element[1])
                 self.element_list.append(figure)
         for element in self.element_list:
             element.parse_element()
@@ -240,7 +249,23 @@ class SvgParser:
                     start = number_of_elements
 
 
+@click.command()
+@click.argument('name_in')
+@click.argument('name_out')
+@click.option('-v', '--viewbox', nargs=4, help='Set viewbox of output file')
+@click.option('-w', '--width', type=float, help='Set custom width of output image, using metrics of input file')
+@click.option('-h', '--height', type=float,  help='Set custom height of output image, using metrics of input file')
+@click.option('--plot/--no-plot', default=False, help='Show matplotlib scater graph for debugging purpose')
+@click.option('-x', '--xscale', type=float, help='Scale image on x axis')
+@click.option('-y', '--yscale', type=float, help='Scale image on y axis')
+@click.option('-r', '--rotate', type=float, help='Rotate image on set angle, number')
+@click.option('--radians/--no-radians', default=False, help='Set angle in radians, True/False')
+@click.option('-s', '--smooth', type=int, help='Set number of splits for curves')
+def parse_svg(name_in, name_out, viewbox, width, height, plot, xscale, yscale, rotate, radians, smooth):
+    svg = SvgParser(name_in, out=name_out, viewbox=list(map(float, viewbox)), plot=plot, width=width, height=height,
+                    scale_x=xscale, scale_y=yscale, rotate=rotate, radians=radians, smooth=smooth)
+    svg.parse()
+
+
 if __name__ == '__main__':
-    some_svg = SvgParser('../assets/example (1).svg', out='out.example', viewbox=(13.7, -3.0, 17.7, 3))
-    some_svg.parse()
- 
+    parse_svg()
